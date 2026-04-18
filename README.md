@@ -1,4 +1,4 @@
-hyperspectral mapping of hematite and kaolinite using SAM
+Hyperspectral mapping of hematite and kaolinite using SAM
 
 **Author:** Peyman Namdarsehat  
 
