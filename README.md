@@ -14,7 +14,7 @@ This repository presents a hyperspectral workflow for mapping **Hematite** and *
 
 The workflow uses an **AVIRIS hyperspectral dataset** provided in **ENVI format**, including the binary image file and its associated **`AVIRIS.HDR`** header file. The hyperspectral cube is read from the ENVI pair, while spectral wavelength information is extracted directly from the HDR metadata for band-wise analysis.
 
-Reference mineral spectra are provided as external text files and resampled to the wavelength positions of the hyperspectral image before spectral matching. In the present implementation, the workflow uses the following mineral endmembers:
+Reference mineral spectra are derived from the **USGS Spectral Library** and provided as external text files. These spectra are resampled to the wavelength positions of the hyperspectral image before spectral matching. In the present implementation, the workflow uses the following target mineral endmembers:
 
 - **Hematite**
 - **Kaolinite**
@@ -36,7 +36,7 @@ The implemented methodology consists of the following processing steps:
    Spectral regions commonly affected by atmospheric absorption are excluded from the analysis in order to retain more reliable bands for mineral discrimination.
 
 5. **Reference endmember loading**  
-   Mineral reference spectra for **Hematite** and **Kaolinite** are read from text files.
+   Mineral reference spectra for **Hematite** and **Kaolinite** are read from text files derived from the **USGS Spectral Library**.
 
 6. **Spectral resampling**  
    The reference spectra are interpolated to match the wavelength positions of the hyperspectral image bands, ensuring direct spectral comparability between image pixels and endmembers.
