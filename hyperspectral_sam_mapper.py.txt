@@ -1,0 +1,235 @@
+"""
+Hyperspectral Mapping of Hematite and Kaolinite using SAM
+
+Author: Peyman Namdarsehat
+
+Description:
+This script performs classical hyperspectral mineral mapping from ENVI-format
+imagery using Spectral Angle Mapper (SAM) for two target minerals:
+- Hematite
+- Kaolinite
+
+The workflow includes:
+- ENVI hyperspectral cube loading
+- Wavelength extraction from HDR metadata
+- Basic preprocessing and bad-band removal
+- Endmember spectrum loading and resampling
+- SAM-based mineral detection
+
+__author__ = "Peyman Namdarsehat"
+
+import os
+import re
+import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+from osgeo import gdal
+
+
+# ----------------------------------------------------
+# 1. Read wavelengths from ENVI HDR
+# ----------------------------------------------------
+def read_envi_wavelengths(hdr_file):
+    with open(hdr_file, "r", errors="ignore") as f:
+        txt = f.read()
+
+    m = re.search(r"wavelength\s*=\s*\{([^}]*)\}", txt, flags=re.IGNORECASE | re.DOTALL)
+    if not m:
+        return None
+
+    vals = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", m.group(1))
+    wl = np.array([float(v) for v in vals], dtype=float)
+
+    if wl.mean() > 50:
+        wl = wl / 1000.0
+
+    return wl
+
+
+# ----------------------------------------------------
+# 2. Load hyperspectral ENVI cube
+# ----------------------------------------------------
+def load_envi_cube(hdr_path, bin_path):
+    ds = gdal.Open(bin_path)
+    if ds is None:
+        raise FileNotFoundError(f"Cannot open ENVI binary file: {bin_path}")
+
+    cube = ds.ReadAsArray().astype(np.float32)
+    if cube.ndim != 3:
+        raise RuntimeError("Expected hyperspectral cube with shape [bands, rows, cols].")
+
+    wavelengths = read_envi_wavelengths(hdr_path)
+    if wavelengths is None:
+        raise RuntimeError("Could not read wavelength information from HDR file.")
+
+    if len(wavelengths) != cube.shape[0]:
+        raise RuntimeError("Wavelength count does not match number of image bands.")
+
+    return cube, wavelengths, ds
+
+
+# ----------------------------------------------------
+# 3. Basic cleaning and bad band removal
+# ----------------------------------------------------
+def preprocess_cube(cube, wavelengths):
+    cube = np.where(np.isfinite(cube), cube, 0)
+    cube = np.where(cube < 0, 0, cube)
+
+    bad_ranges = [(1.35, 1.43), (1.80, 1.98)]
+    good = np.ones(len(wavelengths), dtype=bool)
+
+    for a, b in bad_ranges:
+        good &= ~((wavelengths >= a) & (wavelengths <= b))
+
+    cube = cube[good, :, :]
+    wavelengths = wavelengths[good]
+
+    return cube, wavelengths
+
+
+# ----------------------------------------------------
+# 4. Load endmember spectrum from TXT
+# ----------------------------------------------------
+def load_endmember_txt(path):
+    vals = []
+    with open(path, "r") as f:
+        for line in f:
+            for tok in line.strip().split():
+                if re.fullmatch(r"[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?", tok):
+                    vals.append(float(tok))
+    return np.array(vals, dtype=float)
+
+
+# ----------------------------------------------------
+# 5. Resample endmember to image wavelengths
+# ----------------------------------------------------
+def resample_endmember(endmember_values, cube_wavelengths):
+    em_wl = np.linspace(cube_wavelengths.min(), cube_wavelengths.max(), len(endmember_values))
+    return np.interp(cube_wavelengths, em_wl, endmember_values)
+
+
+# ----------------------------------------------------
+# 6. Spectral Angle Mapper (SAM)
+# ----------------------------------------------------
+def spectral_angle_mapper(cube, target_spectrum):
+    bands, rows, cols = cube.shape
+    X = cube.reshape(bands, -1).T
+
+    X_norm = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+    t_norm = target_spectrum / (np.linalg.norm(target_spectrum) + 1e-12)
+
+    cosang = np.clip(X_norm @ t_norm, -1, 1)
+    sam = np.arccos(cosang)
+
+    return sam.reshape(rows, cols)
+
+
+# ----------------------------------------------------
+# 7. Save GeoTIFF
+# ----------------------------------------------------
+def save_geotiff(array, ref_ds, out_path, gdal_type=gdal.GDT_Float32):
+    driver = gdal.GetDriverByName("GTiff")
+    options = [
+        "COMPRESS=DEFLATE",
+        "PREDICTOR=2",
+        "TILED=YES",
+        "BLOCKXSIZE=256",
+        "BLOCKYSIZE=256"
+    ]
+
+    out_ds = driver.Create(
+        out_path,
+        array.shape[1],
+        array.shape[0],
+        1,
+        gdal_type,
+        options=options
+    )
+
+    if out_ds is None:
+        raise RuntimeError(f"Could not create output GeoTIFF: {out_path}")
+
+    out_ds.SetGeoTransform(ref_ds.GetGeoTransform())
+    out_ds.SetProjection(ref_ds.GetProjection())
+    out_ds.GetRasterBand(1).WriteArray(array)
+    out_ds.FlushCache()
+    out_ds = None
+
+
+# ----------------------------------------------------
+# 8. Process one mineral
+# ----------------------------------------------------
+def process_mineral(cube, wavelengths, ref_ds, mineral_name, spectrum_path, output_dir):
+    if spectrum_path is None:
+        return
+
+    if not os.path.exists(spectrum_path):
+        print(f"Skipping {mineral_name}: file not found -> {spectrum_path}")
+        return
+
+    print(f"Processing {mineral_name} ...")
+
+    endmember = load_endmember_txt(spectrum_path)
+    endmember_resampled = resample_endmember(endmember, wavelengths)
+
+    sam_map = spectral_angle_mapper(cube, endmember_resampled)
+
+    png_path = os.path.join(output_dir, f"SAM_{mineral_name}.png")
+    tif_path = os.path.join(output_dir, f"SAM_{mineral_name}.tif")
+
+    plt.figure(figsize=(6, 6))
+    plt.imshow(sam_map, cmap="viridis")
+    plt.title(f"SAM - {mineral_name}")
+    plt.axis("off")
+    plt.colorbar(label="Spectral Angle (radians)")
+    plt.tight_layout()
+    plt.savefig(png_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    save_geotiff(sam_map.astype(np.float32), ref_ds, tif_path, gdal.GDT_Float32)
+
+    print(f"Saved: {png_path}")
+    print(f"Saved: {tif_path}")
+
+
+# ----------------------------------------------------
+# 9. Main workflow
+# ----------------------------------------------------
+def main(args):
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    cube, wavelengths, ref_ds = load_envi_cube(args.hdr, args.binary)
+    cube, wavelengths = preprocess_cube(cube, wavelengths)
+
+    mineral_files = {
+        "Kaolinite": args.kaolinite,
+        "Hematite": args.hematite,
+    }
+
+    for mineral_name, spectrum_path in mineral_files.items():
+        process_mineral(
+            cube=cube,
+            wavelengths=wavelengths,
+            ref_ds=ref_ds,
+            mineral_name=mineral_name,
+            spectrum_path=spectrum_path,
+            output_dir=args.output_dir
+        )
+
+    print("Done.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Classical hyperspectral mapping of Hematite and Kaolinite using Spectral Angle Mapper (SAM)."
+    )
+
+    parser.add_argument("--hdr", required=True, help="Path to ENVI HDR file")
+    parser.add_argument("--binary", required=True, help="Path to ENVI binary hyperspectral file")
+    parser.add_argument("--output_dir", default="hyperspectral_outputs", help="Output directory")
+
+    parser.add_argument("--kaolinite", default="Kaolinite.txt", help="Path to Kaolinite spectrum TXT")
+    parser.add_argument("--hematite", default="Hematite.txt", help="Path to Hematite spectrum TXT")
+
+    args = parser.parse_args()
+    main(args)
