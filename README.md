@@ -1,7 +1,4 @@
-# hematite-kaolinite-sam-mapping
 hyperspectral mapping of hematite and kaolinite using SAM
-
-# Classical Hyperspectral Mapping of Hematite and Kaolinite Using Spectral Angle Mapper (SAM)
 
 **Author:** Peyman Namdarsehat  
 
